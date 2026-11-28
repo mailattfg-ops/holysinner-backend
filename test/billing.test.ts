@@ -1,6 +1,6 @@
 // Port of frontend/src/lib/billing.check.ts — the shared math must give identical results on the server.
 import { expect, it } from 'vitest'
-import { computeBill, ean13, gstRateFor, splitProfit } from '../src/shared/billing'
+import { computeBill, ean13, gstRateFor, redeemablePoints, splitProfit } from '../src/shared/billing'
 
 it('GST slabs', () => {
   expect(gstRateFor(2500)).toBe(5)
@@ -29,8 +29,16 @@ it('offer below minBill ignored; discounts never exceed subtotal', () => {
   expect([d.offerDiscount, d.total]).toEqual([0, 0])
 })
 
+it('redeemable points: capped by what is wanted and what the bill has left; a ₹0 point value takes none', () => {
+  expect(redeemablePoints(886, 1000, 1)).toBe(886)
+  expect(redeemablePoints(886, 300, 0.5)).toBe(600) // ₹300 left covers 600 points at ₹0.50
+  expect(redeemablePoints(886, 1000, 0)).toBe(0) // redemption off: before, this took all 886 for ₹0
+})
+
 it('profit split sums to net; EAN-13 check digit', () => {
   const s = splitProfit(100000.01, [{ id: 'a', sharePct: 50 }, { id: 'b', sharePct: 30 }, { id: 'c', sharePct: 20 }])
   expect(s.map((x) => x.amount)).toEqual([50000.01, 30000, 20000])
+  // an investor's own row alone is not the whole split: they get their 30%, not "the rest" (= everything)
+  expect(splitProfit(100000, [{ id: 'b', sharePct: 30 }]).map((x) => x.amount)).toEqual([30000])
   expect(ean13('400638133393')).toBe('4006381333931')
 })

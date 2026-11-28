@@ -127,3 +127,13 @@ describe('allocateFifo', () => {
     expect(allocateFifo(bills, 0)).toEqual([])
   })
 })
+
+describe('money inputs', () => {
+  it('refuses fractions of a paisa with a clear 400 (they used to round in the DB: a 500, or a 1-paisa mismatch)', async () => {
+    for (const amount of [0.004, 99.995]) {
+      const res = await pay('sup1', amount)
+      expect(res.status).toBe(400)
+      expect((await json<{ error: { message: string } }>(res)).error.message).toMatch(/2 decimals/)
+    }
+  })
+})

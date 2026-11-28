@@ -9,6 +9,9 @@ export const phone = z.string().regex(PHONE_RE, 'Enter a valid 10-digit mobile n
 export const pin = z.string().regex(/^\d{4,6}$/, 'PIN must be 4–6 digits')
 export const role = z.enum(['Owner', 'Manager', 'Cashier', 'Purchase', 'Investor'])
 export const moduleKey = z.enum(ALL_MODULES as [ModuleKey, ...ModuleKey[]])
+const isoDate = z.iso.datetime({ offset: true }).transform((d) => new Date(d))
+// Rupee amounts: whole paise only (numeric(12,2) would round a 3rd decimal and break CHECKs / sums).
+const money = () => z.number().multipleOf(0.01, 'Amounts can have at most 2 decimals (paise)')
 
 export const loginInput = z.object({ phone, pin })
 
@@ -17,7 +20,7 @@ export const userCreate = z.object({
   phone,
   pin,
   role,
-  salary: z.number().min(0).default(0),
+  salary: money().min(0).default(0),
   modules: z.array(moduleKey).min(1, 'Give at least one module'),
   hue: z.number().int().min(0).max(359).optional(),
 }) // no sharePct: shares change only through PUT /investors/shares, which keeps the total at 100%
@@ -49,7 +52,7 @@ export const settingsPatch = z.object({
   phone: z.string().trim().min(1, 'Enter the phone number'),
   receiptFooter: z.string().trim(),
   pointsPer100: z.number().int().min(0),
-  pointValue: z.number().min(0),
+  pointValue: money().min(0),
   deadStockDays: z.number().int().min(1),
 }).partial().refine((p) => Object.keys(p).length > 0, 'Nothing to update')
 
@@ -57,8 +60,8 @@ export const offerCode = z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,20}$
 
 export const offerInput = z.object({
   type: z.enum(['percent', 'flat']),
-  value: z.number().positive('Value must be above 0'),
-  minBill: z.number().min(0).default(0),
+  value: money().positive('Value must be above 0'),
+  minBill: money().min(0).default(0),
   active: z.boolean().default(true),
   description: z.string().trim().default(''),
 }).refine((o) => o.type === 'flat' || o.value <= 100, { message: 'A percent offer can be at most 100', path: ['value'] })
@@ -82,9 +85,9 @@ export const productCreate = z.object({
   category,
   gender: z.enum(['Men', 'Women', 'Unisex']),
   hsn: z.string().regex(/^\d{4,8}$/, 'HSN is 4–8 digits'),
-  cost: z.number().positive('Cost must be above 0'),
-  price: z.number().positive('Price must be above 0'),
-  mrp: z.number().positive().optional(), // defaults to price; never below price (same as the Add product dialog)
+  cost: money().positive('Cost must be above 0'),
+  price: money().positive('Price must be above 0'),
+  mrp: money().positive().optional(), // defaults to price; never below price (same as the Add product dialog)
   supplierId: z.string().min(1),
   sizes: uniqueNames('size'),
   colors: uniqueNames('colour'),
@@ -132,9 +135,9 @@ export const checkoutInput = z.object({
   lines: z.array(z.object({ variantId: sku, qty: z.number().int().min(1).max(999) })).min(1, 'Cart is empty').max(100),
   customerId: z.string().min(1).optional(),
   offerCode: offerCode.optional(),
-  manualDiscount: z.number().min(0).default(0), // ₹ flat
+  manualDiscount: money().min(0).default(0), // ₹ flat
   pointsToRedeem: z.number().int().min(0).default(0), // points, valued at settings.pointValue
-  payments: z.array(z.object({ mode: z.enum(['cash', 'upi', 'card', 'credit-note']), amount: z.number().positive() })).max(5),
+  payments: z.array(z.object({ mode: z.enum(['cash', 'upi', 'card', 'credit-note']), amount: money().positive() })).max(5),
   creditNoteNo: z.string().trim().toUpperCase().optional(),
   interState: z.boolean().default(false),
 })
@@ -142,18 +145,17 @@ export const checkoutInput = z.object({
 // Unit costs come from the supplier's bill, so here the client's numbers are the source of truth.
 export const purchaseInput = z.object({
   billNo: z.string().trim().min(1, 'Enter the supplier bill number').max(40),
-  date: z.iso.datetime({ offset: true }).transform((d) => new Date(d)).optional(), // bill date; defaults to now
+  date: isoDate.optional(), // bill date; defaults to now
   supplierId: z.string().min(1, 'Pick a supplier'),
-  items: z.array(z.object({ variantId: sku, qty: z.number().int().min(1).max(10000), cost: z.number().min(0).max(1_000_000) }))
+  items: z.array(z.object({ variantId: sku, qty: z.number().int().min(1).max(10000), cost: money().min(0).max(1_000_000) }))
     .min(1, 'Add at least one item').max(200),
-  paid: z.number().min(0).default(0), // paid at entry; the rest is settled later, oldest bill first
+  paid: money().min(0).default(0), // paid at entry; the rest is settled later, oldest bill first
   tripId: z.string().min(1).optional(),
   channel: channel.default('store'),
 })
 
-export const supplierPaymentInput = z.object({ supplierId: z.string().min(1), amount: z.number().positive('Enter an amount').max(100_000_000) })
+export const supplierPaymentInput = z.object({ supplierId: z.string().min(1), amount: money().positive('Enter an amount').max(100_000_000) })
 
-const isoDate = z.iso.datetime({ offset: true }).transform((d) => new Date(d))
 
 export const tripCreate = z.object({
   staffId: z.string().min(1, 'Pick a staff member'),
@@ -162,21 +164,21 @@ export const tripCreate = z.object({
   startDate: isoDate,
   endDate: isoDate,
   purpose: z.string().trim().max(200).default('').transform((p) => p || 'Stock sourcing'), // same default as the Plan trip dialog
-  allowancePerDay: z.number().min(0).max(100_000),
-  advance: z.number().min(0).max(10_000_000),
-  tripPayment: z.number().min(0).max(10_000_000).default(0),
+  allowancePerDay: money().min(0).max(100_000),
+  advance: money().min(0).max(10_000_000),
+  tripPayment: money().min(0).max(10_000_000).default(0),
 }).refine((t) => t.endDate >= t.startDate, { message: 'End date must be after the start date', path: ['endDate'] })
 
 export const tripExpense = z.object({
   label: z.string().trim().min(1, 'Enter a label').max(80),
-  amount: z.number().positive('Enter an amount').max(10_000_000),
+  amount: money().positive('Enter an amount').max(10_000_000),
 })
 
 export const EXPENSE_CATEGORIES = ['Rent', 'Electricity', 'Marketing', 'Packaging', 'Shopify fees', 'Maintenance', 'Misc'] as const
 
 export const expenseInput = z.object({
   category: z.enum(EXPENSE_CATEGORIES),
-  amount: z.number().positive('Enter an amount above ₹0').max(100_000_000),
+  amount: money().positive('Enter an amount above ₹0').max(100_000_000),
   note: z.string().trim().max(200).default(''), // blank → the category, as in the Add expense dialog
   date: isoDate.optional(), // defaults to now
 })

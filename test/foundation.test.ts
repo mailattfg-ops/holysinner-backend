@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { app, onError } from '../src/app'
 import { db } from '../src/db'
-import { counters } from '../src/db/schema'
+import { eq } from 'drizzle-orm'
+import { appLogs, counters, customers } from '../src/db/schema'
 import { AppError } from '../src/lib/errors'
 import { v } from '../src/lib/validate'
 
@@ -43,5 +44,19 @@ describe('foundation', () => {
     const d = await t.request('/dup') // a real unique-index violation from the DB driver
     expect(d.status).toBe(409)
     expect(((await d.json()) as { error: { code: string } }).error.code).toBe('conflict')
+  })
+
+  it('a failed query is logged without its values (no phones, PIN hashes or tokens in app_logs)', async () => {
+    const t = new Hono()
+    const phone = '9847012399'
+    // a CHECK violation (points below 0) on a row that carries a customer's phone
+    t.get('/check', async () => { await db.insert(customers).values({ id: 'cx1', name: 'Ravi', phone, city: 'Kochi', loyaltyPoints: -1 }); return new Response() })
+    t.onError(onError)
+    expect((await t.request('/check')).status).toBe(500)
+    const logged = await db.select().from(appLogs).where(eq(appLogs.source, 'api'))
+    const text = JSON.stringify(logged)
+    expect(logged.length).toBeGreaterThan(0)
+    expect(text).not.toContain(phone)
+    expect(text).not.toContain('params:')
   })
 })

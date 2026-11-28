@@ -10,12 +10,14 @@ const schema = z.object({
   DATABASE_URL: blankIsUnset(z.string().optional()),
   PGLITE_DIR: blankIsUnset(z.string().default('.pglite')),
   JWT_SECRET: blankIsUnset(z.string().min(32).default(DEV_JWT)),
-  JOBS_SECRET: blankIsUnset(z.string().min(16).default('dev-only-jobs-secret')),
   CORS_ORIGIN: blankIsUnset(z.string().default('http://localhost:5173')), // comma-separated
 })
 
 export const env = schema.parse(process.env)
 
-if (env.NODE_ENV === 'production' && (!env.DATABASE_URL || env.JWT_SECRET === DEV_JWT)) {
-  throw new Error('Production needs DATABASE_URL and a real JWT_SECRET')
+if (env.NODE_ENV === 'production' && !env.DATABASE_URL) throw new Error('Production needs DATABASE_URL')
+// The dev key is public (it's in this file): anyone could forge an Owner token for a server that signs with it.
+// So it's allowed only on the local embedded database, never on a real one, whatever NODE_ENV says.
+if (env.DATABASE_URL && env.JWT_SECRET === DEV_JWT) {
+  throw new Error('DATABASE_URL is set, so a real JWT_SECRET is required (32+ random characters, e.g. `openssl rand -hex 32`) in backend/.env')
 }

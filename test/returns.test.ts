@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { db } from '../src/db'
 import { auditLog, stockMovements } from '../src/db/schema'
 import { seed } from '../src/db/seed'
-import { computeBill, gstRateFor, returnLineAmount } from '../src/shared/billing'
+import { computeBill, gstRateFor, returnAmounts, returnLineAmount } from '../src/shared/billing'
 import { buildSeed } from '../src/shared/seed'
 import type { CreditNote, Product, ReturnEntry, Sale, Variant } from '../src/shared/types'
 import { call, json, login, OWNER } from './helpers'
@@ -125,6 +125,34 @@ describe('returns', () => {
     expect(list.length).toBeGreaterThan(demo.returns.length)
     expect(list.map((r) => r.date)).toEqual(list.map((r) => r.date).sort().reverse())
     for (const r of demo.returns) expect(list.find((x) => x.id === r.id)).toMatchObject({ saleId: r.saleId, amount: r.amount, mode: r.mode })
+  })
+})
+
+describe('refunds never pass the bill total', () => {
+  it('returnAmounts takes the rounding excess off the biggest line', () => {
+    const sale = { total: 299, subtotal: 300 } // 3 × ₹100 less ₹1: each line alone rounds to ₹100
+    expect(returnAmounts([{ price: 100, qty: 1 }, { price: 100, qty: 1 }, { price: 100, qty: 1 }], sale, 0).reduce((t, a) => t + a, 0)).toBe(299)
+    expect(returnAmounts([{ price: 100, qty: 1 }], sale, 250)).toEqual([49]) // only ₹49 of the bill is left to refund
+    expect(returnAmounts([{ price: 1000, qty: 1 }], { total: 900, subtotal: 1000 }, 0)).toEqual([900]) // under the cap: unchanged
+  })
+
+  it('a discounted bill returned one unit at a time refunds exactly what was paid', async () => {
+    const [vs, ps] = await Promise.all([json<Variant[]>(await call('/variants', { token: owner })), json<Product[]>(await call('/products', { token: owner }))])
+    const price = new Map(ps.map((p) => [p.id, p.price]))
+    const v = vs.find((x) => x.stockOffline >= 10 && !used.has(x.id) && price.get(x.productId)! % 2 === 1)! // odd price: each unit rounds up
+    used.add(v.id)
+    const p = price.get(v.productId)!
+    const { total } = computeBill([{ price: p, qty: 10, gstRate: gstRateFor(p) }], { manualDiscount: 5 })
+    const res = await call('/sales/checkout', { body: { lines: [{ variantId: v.id, qty: 10 }], manualDiscount: 5, payments: [{ mode: 'cash', amount: total }] }, token: cashier })
+    expect(res.status).toBe(201)
+    const { sale } = await json<{ sale: Sale }>(res)
+    let refunded = 0
+    for (let i = 0; i < 10; i++) {
+      const r = await giveBack({ saleId: sale.id, items: [{ variantId: v.id, qty: 1 }], mode: 'refund', reason: 'Size issue' })
+      expect(r.status).toBe(201)
+      refunded += (await json<Done>(r)).return.amount
+    }
+    expect(refunded).toBe(total) // the old per-line rounding refunded ₹5 more than the customer paid
   })
 })
 

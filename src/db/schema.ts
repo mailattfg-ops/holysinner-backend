@@ -53,6 +53,7 @@ export const refreshTokens = pgTable('refresh_tokens', {
   userId: text().notNull().references(() => users.id),
   expiresAt: timestamp({ withTimezone: true }).notNull(),
   revoked: boolean().notNull().default(false),
+  revokedAt: timestamp({ withTimezone: true }), // tells a just-rotated token (another tab) from a reused old one
   createdAt: at(),
 }).enableRLS()
 

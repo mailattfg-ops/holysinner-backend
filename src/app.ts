@@ -24,7 +24,7 @@ import { userRoutes } from './modules/users/routes'
 export const app = new Hono().basePath('/api')
 
 app.use(secureHeaders())
-app.use(cors({ origin: env.CORS_ORIGIN.split(','), credentials: true }))
+app.use(cors({ origin: env.CORS_ORIGIN.split(',').map((o) => o.trim()), credentials: true }))
 
 // Runs a real query so the keep-alive ping counts as Supabase activity.
 app.get('/health', async (c) => {
@@ -62,7 +62,11 @@ export const onError: ErrorHandler = async (err, c) => {
   // A unique index lost a race that the service's own duplicate check couldn't see (two saves at the same instant).
   const pgCode = (err as { code?: string; cause?: { code?: string } }).cause?.code ?? (err as { code?: string }).code
   if (pgCode === '23505') return c.json({ error: { code: 'conflict', message: 'This was just saved by someone else. Refresh and check.' } }, 409)
-  await logIssue('error', 'api', err.message, { path: c.req.path, method: c.req.method, stack: err.stack })
+  // Drizzle wraps database errors in a message that lists every query value (phones, PIN hashes, tokens):
+  // log the database's own error instead, which names the problem without the values.
+  const cause = (err as { cause?: unknown }).cause
+  const logged = cause instanceof Error ? cause : err
+  await logIssue('error', 'api', logged.message, { path: c.req.path, method: c.req.method, stack: logged.stack })
   return c.json({ error: { code: 'server_error', message: 'Something went wrong. Please try again.' } }, 500)
 }
 app.onError(onError)

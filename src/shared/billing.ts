@@ -68,9 +68,27 @@ export function computeBill(lines: BillLine[], opts: BillOpts = {}): BillTotals 
 
 export const pointsEarned = (total: number, per100: number) => Math.floor(total / 100) * per100
 
+// Points a bill can take: no more than wanted, nor than the ₹ left after the offer and manual discount.
+// A point value of 0 means redemption is off (dividing by it would take every point for ₹0).
+export const redeemablePoints = (wanted: number, rupeesLeft: number, pointValue: number) =>
+  pointValue > 0 ? Math.max(0, Math.min(wanted, Math.floor(rupeesLeft / pointValue))) : 0
+
 // A returned line refunds what was actually paid for it: its share of the bill after every discount.
 export const returnLineAmount = (price: number, qty: number, sale: { total: number; subtotal: number }) =>
   Math.round(price * qty * (sale.subtotal ? sale.total / sale.subtotal : 1))
+
+// What each line of a return refunds. Lines are rounded one by one, so on a discounted bill they can add up to
+// more than was paid (10 × ₹99 less ₹5 = ₹985, returned singly = 10 × ₹99). The bill's refunds never pass its
+// total: the excess comes off the biggest line.
+export function returnAmounts(lines: { price: number; qty: number }[], sale: { total: number; subtotal: number }, refundedBefore: number) {
+  const amounts = lines.map((l) => returnLineAmount(l.price, l.qty, sale))
+  const over = amounts.reduce((t, a) => t + a, 0) - Math.max(0, sale.total - refundedBefore)
+  if (over > 0 && amounts.length) {
+    const i = amounts.indexOf(Math.max(...amounts))
+    amounts[i] = Math.max(0, amounts[i]! - over)
+  }
+  return amounts
+}
 
 // A supplier payment settles the oldest unpaid bills first (FIFO). Anything beyond the total due is not allocated.
 export function allocateFifo(bills: { id: string; date: string; total: number; paid: number }[], amount: number) {
@@ -84,10 +102,13 @@ export function allocateFifo(bills: { id: string; date: string; total: number; p
 }
 
 // Splits net profit by share %; last holder absorbs rounding so the parts always sum to the whole.
+// The last holder absorbs the rounding only when the list is the whole split (100%). An investor's screen gets
+// just their own share, and must not be handed everyone else's profit as "rounding".
 export function splitProfit(net: number, holders: { id: string; sharePct: number }[]) {
+  const whole = Math.round(holders.reduce((t, h) => t + h.sharePct, 0) * 100) === 10_000
   let given = 0
   return holders.map((h, i) => {
-    const amount = i === holders.length - 1 ? round2(net - given) : round2((net * h.sharePct) / 100)
+    const amount = whole && i === holders.length - 1 ? round2(net - given) : round2((net * h.sharePct) / 100)
     given += amount
     return { id: h.id, sharePct: h.sharePct, amount }
   })

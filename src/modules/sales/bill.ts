@@ -1,13 +1,14 @@
 import type { Payment } from '../../db/schema'
 import { AppError } from '../../lib/errors'
-import { computeBill, round2 } from '../../shared/billing'
+import { toIst } from '../../lib/ist'
+import { computeBill, redeemablePoints, round2 } from '../../shared/billing'
 import type { Offer, SaleItem, Settings } from '../../shared/types'
 
 const two = (n: number) => String(n % 100).padStart(2, '0')
 
 // Financial year label for an invoice, in Indian time: 1 April 2026 IST onwards → "26-27".
 export function financialYear(d: Date) {
-  const ist = new Date(d.getTime() + 330 * 60_000)
+  const ist = toIst(d)
   const start = ist.getUTCMonth() >= 3 ? ist.getUTCFullYear() : ist.getUTCFullYear() - 1
   return `${two(start)}-${two(start + 1)}`
 }
@@ -18,7 +19,7 @@ interface BillInput { manualDiscount: number; pointsToRedeem: number; interState
 export function priceBill(items: SaleItem[], offer: Offer | undefined, input: BillInput, pointsBalance: number, s: Settings) {
   if (input.pointsToRedeem > pointsBalance) throw new AppError('not_enough_points', `Only ${pointsBalance} points available`)
   const pre = computeBill(items, { offer, manualDiscount: input.manualDiscount })
-  const pointsUsed = Math.min(input.pointsToRedeem, Math.floor((pre.subtotal - pre.offerDiscount - pre.manualDiscount) / s.pointValue))
+  const pointsUsed = redeemablePoints(input.pointsToRedeem, pre.subtotal - pre.offerDiscount - pre.manualDiscount, s.pointValue)
   const bill = computeBill(items, { offer, manualDiscount: input.manualDiscount, pointsRedeemed: pointsUsed * s.pointValue, interState: input.interState })
   return { bill, pointsUsed }
 }

@@ -7,11 +7,10 @@ import { loginInput } from '../../shared/schemas'
 import { login, logout, refresh, REFRESH_DAYS } from './service'
 
 const COOKIE = 'hs_refresh'
-// Frontend and API live on different *.vercel.app sites in production → cross-site cookie needs SameSite=None + Secure.
-const cookieOpts = {
-  httpOnly: true, path: '/api/auth', maxAge: REFRESH_DAYS * 86400,
-  ...(env.NODE_ENV === 'production' ? { secure: true, sameSite: 'None' as const } : { sameSite: 'Lax' as const }),
-}
+// The frontend reaches the API on its own origin (Vercel rewrite in production, the Vite proxy in dev), so the
+// cookie is first-party: SameSite=Lax works on iPhone Safari (which blocks cross-site cookies) and other sites
+// can't send it, e.g. to log someone out.
+const cookieOpts = { httpOnly: true, path: '/api/auth', maxAge: REFRESH_DAYS * 86400, sameSite: 'Lax' as const, secure: env.NODE_ENV === 'production' }
 
 const session = (c: Context, s: { user: UserRow; accessToken: string; refresh: string }) => {
   setCookie(c, COOKIE, s.refresh, cookieOpts)

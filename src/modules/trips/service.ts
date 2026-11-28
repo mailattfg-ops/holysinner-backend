@@ -6,13 +6,13 @@ import { audit } from '../../lib/audit'
 import type { UserRow } from '../../lib/auth'
 import { reserve } from '../../lib/counters'
 import { AppError, conflict, notFound } from '../../lib/errors'
+import { rupees } from '../../lib/format'
 import { tripCost } from '../../shared/money'
 import type { tripCreate, tripExpense } from '../../shared/schemas'
 
 type TripRow = typeof trips.$inferSelect
 interface Change { patch: Partial<TripRow>; action: string; detail: string }
 
-const rupees = (n: number) => `₹${n.toLocaleString('en-IN')}`
 const toTrip = (t: TripRow) => ({ ...t, startDate: t.startDate.toISOString(), endDate: t.endDate.toISOString(), settledAt: t.settledAt?.toISOString() ?? null })
 
 export const listTrips = async () => (await db.select().from(trips).orderBy(asc(trips.startDate), asc(trips.id))).map(toTrip)

@@ -6,15 +6,14 @@ import { audit } from '../../lib/audit'
 import type { UserRow } from '../../lib/auth'
 import { reserve } from '../../lib/counters'
 import { AppError, conflict } from '../../lib/errors'
-import { istMonth } from '../../lib/ist'
+import { rupees } from '../../lib/format'
+import { istMonth, notInFuture } from '../../lib/ist'
 import { gstReport } from '../../shared/billing'
 import { profitAndLoss, type PnlInput } from '../../shared/money'
 import type { expenseInput, salaryInput } from '../../shared/schemas'
 import { listSales, salesByIds } from '../sales/service'
 import { listTrips } from '../trips/service'
 
-const DAY = 86_400_000
-const rupees = (n: number) => `₹${n.toLocaleString('en-IN')}`
 
 type ExpenseRow = typeof expenses.$inferSelect
 type SalaryRow = typeof salaryPayments.$inferSelect
@@ -26,7 +25,7 @@ export const listSalaries = async () => (await db.select().from(salaryPayments).
 
 export async function addExpense(by: UserRow, input: z.infer<typeof expenseInput>) {
   const date = input.date ?? new Date()
-  if (date.getTime() > Date.now() + DAY) throw new AppError('future_date', 'The expense date is in the future')
+  notInFuture(date, 'expense')
   return db.transaction(async (tx) => {
     const [e] = await tx.insert(expenses).values({ ...input, id: `e${await reserve(tx, 'expense')}`, date, note: input.note || input.category, userId: by.id }).returning()
     await audit(tx, { userId: by.id, action: 'Expense added', detail: `${e!.category} · ${rupees(e!.amount)}`, entity: 'expense', entityId: e!.id })

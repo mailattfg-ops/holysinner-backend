@@ -8,6 +8,7 @@
     "typecheck": "tsc",
     "lint": "oxlint src test",
     "test": "vitest run",
+    "test:pg": "vitest run --config vitest.pg.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --env-file-if-exists=.env src/db/cli.ts migrate",
     "db:seed": "tsx --env-file-if-exists=.env src/db/cli.ts seed"
@@ -35,6 +36,7 @@
   "devDependencies": {
     "@types/node": "^26.6.11",
     "drizzle-kit": "^0.31.11",
+    "embedded-postgres": "17.11.0-beta.19",
     "oxlint": "^1.95.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",

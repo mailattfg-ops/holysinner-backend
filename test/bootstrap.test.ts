@@ -53,13 +53,14 @@ describe('bootstrap', () => {
     expect(b.audit.every((a) => mine.has(a.action))).toBe(true)
   })
 
-  it('gives an investor the money slices and the share split, but not the back office', () => {
+  it('gives an investor the money slices and only their own share, but not the back office', () => {
     const b = boot.investor
     expect(length(b, 'expenses')).toBe(demo.expenses.length)
     expect(length(b, 'salaryPayments')).toBe(demo.salaryPayments.length)
     expect(b.sales[0]!.items[0]).toHaveProperty('cost') // analytics + margins
     for (const key of ['purchases', 'suppliers', 'transfers', 'creditNotes']) expect([key, length(b, key)]).toEqual([key, 0])
-    expect(b.users.filter((u) => u.sharePct).map((u) => [u.id, u.sharePct])).toEqual([['u1', 50], ['u6', 30], ['u7', 20]])
+    expect(b.users.filter((u) => u.sharePct).map((u) => [u.id, u.sharePct])).toEqual([['u6', 30]]) // u6 is this investor
+    expect(boot.owner.users.filter((u) => u.sharePct).map((u) => [u.id, u.sharePct])).toEqual([['u1', 50], ['u6', 30], ['u7', 20]])
     expect(b.users.find((u) => u.id === 'u1')).not.toHaveProperty('phone')
   })
 

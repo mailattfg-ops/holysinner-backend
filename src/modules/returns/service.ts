@@ -7,7 +7,7 @@ import type { UserRow } from '../../lib/auth'
 import { reserve } from '../../lib/counters'
 import { AppError, notFound } from '../../lib/errors'
 import { applyMoves, mergeQty } from '../../lib/stock'
-import { returnLineAmount } from '../../shared/billing'
+import { returnAmounts } from '../../shared/billing'
 import type { returnInput } from '../../shared/schemas'
 import { toSale } from '../sales/service'
 
@@ -17,15 +17,18 @@ type ReturnRow = typeof returns.$inferSelect
 const ACTION = { refund: 'Refund', exchange: 'Exchange', 'credit-note': 'Credit note issued' } as const
 const toReturn = (r: ReturnRow) => ({ ...r, date: r.date.toISOString() })
 
-// Each picked line must be on the bill and not returned already; it refunds its pro-rata share of what was paid.
-function returnLines(items: ItemRow[], sale: { invoiceNo: string; total: number; subtotal: number }, picked: { variantId: string; qty: number }[]) {
-  return picked.map(({ variantId, qty }) => {
+// Each picked line must be on the bill and not returned already. It refunds its pro-rata share of what was paid,
+// and the bill's refunds together never pass its total (returnAmounts).
+function returnLines(items: ItemRow[], sale: { invoiceNo: string; total: number; subtotal: number }, picked: { variantId: string; qty: number }[], refundedBefore: number) {
+  const lines = picked.map(({ variantId, qty }) => {
     const item = items.find((i) => i.variantId === variantId)
     if (!item) throw new AppError('not_on_bill', `${variantId} is not on bill ${sale.invoiceNo}`)
     const left = item.qty - item.returnedQty
     if (qty > left) throw new AppError('over_return', left ? `Only ${left} of ${variantId} can still be returned` : `${variantId} was already returned`)
-    return { item, variantId, qty, amount: returnLineAmount(item.price, qty, sale) }
+    return { item, variantId, qty }
   })
+  const amounts = returnAmounts(lines.map((l) => ({ price: l.item.price, qty: l.qty })), sale, refundedBefore)
+  return lines.map((l, i) => ({ ...l, amount: amounts[i]! }))
 }
 
 // One return = one transaction: stock back to the bill's channel, returned qty and status on the bill,
@@ -37,7 +40,9 @@ export function processReturn(by: UserRow, input: z.infer<typeof returnInput>) {
     const [sale] = await tx.select().from(sales).where(eq(sales.id, input.saleId)).for('update')
     if (!sale) throw notFound('Bill')
     const items = await tx.select().from(saleItems).where(eq(saleItems.saleId, sale.id)).orderBy(asc(saleItems.id)).for('update')
-    const lines = returnLines(items, sale, mergeQty(input.items))
+    // The bill row is locked above, so two returns of the same bill can't both count the same earlier refunds.
+    const [{ refunded }] = await tx.select({ refunded: sql<number>`coalesce(sum(${returns.amount}), 0)`.mapWith(Number) }).from(returns).where(eq(returns.saleId, sale.id))
+    const lines = returnLines(items, sale, mergeQty(input.items), refunded)
     const amount = lines.reduce((t, l) => t + l.amount, 0)
 
     const stock = await applyMoves(tx, by.id, lines.map((l) => ({ variantId: l.variantId, channel: sale.channel, qty: l.qty, kind: 'return' as const, refId: id })))

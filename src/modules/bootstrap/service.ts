@@ -25,7 +25,8 @@ function directory(viewer: UserRow, list: PublicUser[]) {
   return list.map((u) => (full || u.id === viewer.id ? u : {
     id: u.id, name: u.name, role: u.role, hue: u.hue, active: u.active,
     ...(canRead(viewer.modules, ['finance']) && { salary: u.salary }), // payroll
-    ...(canRead(viewer.modules, READ.money) && u.sharePct && { sharePct: u.sharePct }), // profit split
+    // Profit split: an Investor sees only their own share (their own full profile above), as on /investors/summary.
+    ...(viewer.role !== 'Investor' && canRead(viewer.modules, READ.money) && u.sharePct && { sharePct: u.sharePct }),
   }))
 }
 

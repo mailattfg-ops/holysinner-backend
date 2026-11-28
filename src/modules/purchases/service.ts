@@ -6,13 +6,13 @@ import { audit } from '../../lib/audit'
 import type { UserRow } from '../../lib/auth'
 import { reserve } from '../../lib/counters'
 import { AppError, conflict } from '../../lib/errors'
+import { rupees } from '../../lib/format'
+import { notInFuture } from '../../lib/ist'
 import { applyMoves } from '../../lib/stock'
 import { allocateFifo, round2 } from '../../shared/billing'
 import type { purchaseInput, supplierPaymentInput } from '../../shared/schemas'
 
 type PurchaseRow = typeof purchases.$inferSelect
-const DAY = 86_400_000
-const rupees = (n: number) => `₹${n.toLocaleString('en-IN')}`
 const toPurchase = (p: PurchaseRow) => ({ ...p, date: p.date.toISOString() })
 
 async function supplierOf(tx: Tx, id: string) {
@@ -34,7 +34,7 @@ export async function addPurchase(by: UserRow, input: z.infer<typeof purchaseInp
   const total = round2(input.items.reduce((t, i) => t + i.qty * i.cost, 0))
   const date = input.date ?? new Date()
   if (input.paid > total) throw new AppError('over_payment', `Paid can't be more than the bill (${rupees(total)})`)
-  if (date.getTime() > Date.now() + DAY) throw new AppError('future_date', 'The bill date is in the future')
+  notInFuture(date, 'bill')
   return db.transaction(async (tx) => {
     const id = `pu${await reserve(tx, 'purchase')}`
     const supplier = await supplierOf(tx, input.supplierId)
