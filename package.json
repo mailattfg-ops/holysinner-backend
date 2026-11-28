@@ -1,0 +1,47 @@
+{
+  "name": "holysinner-backend",
+  "version": "0.1.0",
+  "description": "Holysinner ERP API",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
+    "start": "tsx --env-file-if-exists=.env src/server.ts",
+    "typecheck": "tsc",
+    "lint": "oxlint src test",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx --env-file-if-exists=.env src/db/cli.ts migrate",
+    "db:seed": "tsx --env-file-if-exists=.env src/db/cli.ts seed"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mailattfg-ops/holysinner-backend.git"
+  },
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/mailattfg-ops/holysinner-backend/issues"
+  },
+  "homepage": "https://github.com/mailattfg-ops/holysinner-backend#readme",
+  "dependencies": {
+    "@electric-sql/pglite": "^0.6.0",
+    "@hono/node-server": "^2.1.11",
+    "@hono/zod-validator": "^0.9.1",
+    "@node-rs/argon2": "^2.2.2",
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.22",
+    "pino": "^10.4.0",
+    "postgres": "^4.1.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.11",
+    "drizzle-kit": "^0.31.11",
+    "oxlint": "^1.95.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.2"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  }
+}

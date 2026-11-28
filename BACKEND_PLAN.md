@@ -55,11 +55,20 @@ real API and database **while keeping the store's shape**, so most pages don't h
 | ORM | **Drizzle** + drizzle-kit migrations | Typed SQL, no runtime magic, the schema is the source of truth |
 | Validation | **Zod** (schemas live in `shared/`) | One schema validates on the client and the server |
 | Auth | Phone + 4–6 digit PIN (staff) → JWT access token (15 min) + httpOnly refresh cookie | Fits a shop counter. No email flow needed |
-| Jobs | **pg-boss** (runs on Postgres) | Shopify sync and WhatsApp retries without adding Redis |
-| Tests | Vitest + a throwaway Postgres (Docker / Testcontainers) | Money and stock logic gets real-DB tests |
-| Hosting | API on Railway/Render/Fly (Mumbai region), DB on Neon/Supabase (ap-south-1); frontend stays on Vercel | Cheap, managed, low latency for Kochi |
+| Jobs | **Supabase Queues (`pgmq`) + `pg_cron` + `pg_net`** | Open-source Postgres extensions, free on Supabase. No always-on worker is needed, which suits serverless |
+| Logs | `pino` to stdout + an `app_logs` table | Free; errors stay queryable in the same DB |
+| Tests | Vitest against in-memory PGlite (embedded Postgres); local dev also uses PGlite when `DATABASE_URL` is unset | Real Postgres, zero setup, no Docker |
+| Hosting | API on **Vercel Functions** (`bom1` Mumbai), DB on **Supabase** (`ap-south-1` Mumbai), frontend on Vercel | Free tiers, one vendor for both deploys, API and DB in the same city |
 
 Money is stored as `numeric(12,2)` and read through Drizzle as `mode: 'number'`. It stays in rupees, the same as the frontend, so no paise conversion is needed.
+
+**Serverless rules (Vercel + Supabase):**
+- Connect through the Supavisor pooler (transaction mode, port 6543) with `prepare: false`. Each function instance keeps a small pool (`max: 1–3`).
+- No in-memory state between requests: no caches, no in-memory rate limiters, no timers. Anything that must survive a request goes in Postgres.
+- A request must never wait on Shopify or WhatsApp. Enqueue to `pgmq` and return.
+- Job runner: every 2 minutes `pg_cron` calls `pg_net` to POST `/api/jobs/run` (protected by a `JOBS_SECRET` header). The handler reads a small batch from each queue, processes it and deletes it. Failed messages come back after the visibility timeout; after 5 reads they move to `app_logs` as dead letters.
+- Plans: **Supabase Free + Vercel Hobby** (decided 2026-11-26). Hobby is non-commercial only; if that becomes a problem, the fallback is Vercel Pro or Cloudflare Workers, where Hono runs with only a different entry file.
+- Keep-alive: `.github/workflows/keep-alive.yml` pings `/health` every 6 days so the free Supabase project never pauses.
 
 ---
 
@@ -80,8 +89,9 @@ Holysinner/
    │  ├─ db/index.ts         pool + `tx()` helper
    │  ├─ lib/                auth.ts (jwt, requireModule), audit.ts, counters.ts, stock.ts, errors.ts
    │  ├─ modules/<name>/     routes.ts (HTTP only) + service.ts (business logic)
-   │  └─ jobs/               shopify.ts, whatsapp.ts
-   ├─ drizzle/               generated migrations
+   │  └─ jobs/               runner.ts (drains pgmq), shopify.ts, whatsapp.ts
+   ├─ api/index.ts           Vercel entry: `export default handle(app)`
+   ├─ drizzle/               generated migrations (+ a custom one enabling pgmq/pg_cron/pg_net and RLS)
    └─ seed.ts                reuses shared seed builder → `npm run db:seed`
 ```
 
@@ -95,7 +105,7 @@ Every table has `id` (text/uuid) and `created_at`. Foreign keys are enforced.
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `users` | name, role, phone (unique), pin_hash, salary, modules text[], share_pct, hue, active | Investors and the Owner hold `share_pct`. A CHECK on the app side keeps the sum at 100 |
+| `users` | name, role, phone (unique), pin_hash, failed_logins, locked_until, salary, modules text[], share_pct, hue, active | Investors and the Owner hold `share_pct`. A CHECK on the app side keeps the sum at 100 |
 | `settings` | single row: shop fields, points_per_100, point_value, dead_stock_days | |
 | `suppliers` | name, city, state, phone, gstin | |
 | `products` | name, brand, category, gender, hsn, cost, price, mrp, supplier_id, hue, archived | |
@@ -117,6 +127,9 @@ Every table has `id` (text/uuid) and `created_at`. Foreign keys are enforced.
 | `audit_log` | user_id, action, detail, entity, entity_id, at | Written in the same transaction as the change. Never truncated |
 | `shopify_state` | single row: connected, store_url, access_token (encrypted), last_sync, auto_sync | |
 | `refresh_tokens` | user_id, token_hash, expires_at, revoked | |
+| `app_logs` | level, source (`api`/`job:<name>`), message, context jsonb, at | Warnings, errors and dead-letter jobs. `pg_cron` deletes rows older than 30 days |
+
+Queues (`pgmq`, not tables we define): `shopify_inventory`, `shopify_orders`, `whatsapp`.
 
 Indexes: `sales(date)`, `sales(customer_id)`, `sale_items(product_id)`, `stock_movements(variant_id, created_at)`, `purchases(supplier_id)`, `audit_log(at desc)`.
 
@@ -158,7 +171,9 @@ GET/PATCH /settings   GET /offers   PUT /offers/:code             [settings]
 GET    /audit?before&limit                                         [dashboard|users]
 
 GET/PATCH /shopify   POST /shopify/connect   POST /shopify/sync   [online]
-POST   /webhooks/shopify/orders-create | orders-cancelled | refunds-create   (HMAC verified, no JWT)
+POST   /webhooks/shopify/orders-create | orders-cancelled | refunds-create   (HMAC verified, no JWT, enqueue + 200)
+POST   /jobs/run              (JOBS_SECRET header, called by pg_cron)
+GET    /health                no auth; runs `select 1` → {ok, db_ms}. A GitHub Actions ping every 6 days keeps Supabase awake
 ```
 
 Errors are always `{ error: { code, message } }` with a 4xx/5xx status. The frontend already shows `toast.error(message)`.
@@ -185,9 +200,9 @@ Errors are always `{ error: { code, message } }` with a 4xx/5xx status. The fron
 
 **Shopify**
 - Connect: OAuth or a custom-app token for the store. Map each variant by SKU to its `inventory_item_id`.
-- `orders/create` webhook: idempotent on `shopify_order_id`. It runs the same checkout service with `channel='online'` and the prices from the order.
-- Every movement on online stock enqueues `shopify.pushInventory(variantId)`. A pg-boss job calls `inventorySet`, with debounce and retry.
-- When `auto_sync` is on, a cron job every 15 minutes reconciles orders and inventory.
+- `orders/create` webhook: verify the HMAC, enqueue to `shopify_orders` and reply 200 straight away (Shopify expects a quick answer). The job is idempotent on `shopify_order_id` and runs the same checkout service with `channel='online'` and the prices from the order.
+- Every movement on online stock enqueues a `variantId` to `shopify_inventory`. The job removes duplicate variants in the batch, then calls `inventorySetQuantities`. Retries come from the `pgmq` visibility timeout.
+- When `auto_sync` is on, `pg_cron` reconciles orders and inventory every 15 minutes.
 
 **WhatsApp (Phase 3)**: Cloud API templates for receipts and birthday/offer campaigns, sent as a queued job with a delivery log. Until then, `wa.me` links stay as they are.
 
@@ -197,11 +212,12 @@ Errors are always `{ error: { code, message } }` with a 4xx/5xx status. The fron
 
 ## 7. Security
 
-- PINs are hashed with argon2. Login attempts are rate-limited per phone and IP. Five failures lock the account for 15 minutes.
+- PINs are hashed with argon2. Five failed logins lock the account for 15 minutes (`users.failed_logins` / `locked_until`, stored in Postgres because serverless has no shared memory).
+- **Supabase RLS is enabled on every table with no policies.** The backend connects as the DB owner and bypasses RLS; the public `anon` key can't read anything. The service-role key and DB password stay in Vercel env vars only.
 - Access is enforced on the server from `users.modules`. The UI hiding a page is never enough. Owner-only actions are users, shares, settings reset and PIN reset.
 - Investors get read-only access: the `investors`, `analytics` and `dashboard` GET routes.
 - CORS is limited to the Vercel domain. Secure headers are set. Shopify webhooks are verified by HMAC. The Shopify token is encrypted at rest.
-- Postgres has daily automated backups and point-in-time recovery (Neon/Supabase). Nothing is hard-deleted: products are archived, and sales are reversed only through returns.
+- Backups: a nightly `pg_dump` in GitHub Actions, encrypted and kept 30 days. The free Supabase plan has no point-in-time restore, so we don't rely on it. Nothing is hard-deleted: products are archived, and sales are reversed only through returns.
 
 ---
 
@@ -229,4 +245,4 @@ Errors are always `{ error: { code, message } }` with a 4xx/5xx status. The fron
 | **6. Shopify** | connect, webhooks, inventory push, auto-sync job | Real orders land as online sales and the online stock mirrors the ERP |
 | **7. WhatsApp + devices** | WhatsApp Cloud API receipts/campaigns, ESC/POS printing, camera scan | |
 
-Not planned (YAGNI): multiple shops or tenants, microservices, GraphQL, Redis.
+Not planned (YAGNI): multiple shops or tenants, microservices, GraphQL, Redis, always-on workers.
